@@ -1,0 +1,232 @@
+---
+title: "Epi Machine Learning Assignment 4"
+author: "Sydney Ng (uni: sn2863)"
+date: "Due February 9, 2021 by 5:30 PM"
+output: 
+  html_document: 
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: show
+---
+
+**Cleaning and visualizing the data**
+
+```{r, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(Amelia) # good for missing data
+library(caret)
+library(ggbiplot)
+library(stats)
+library(factoextra)
+library(cluster)
+library(patchwork)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+# data cleaning
+dat <- read_csv("./class4_p1.csv") %>%
+  janitor::clean_names() %>%
+   mutate(id = as.character(x1),
+          hypertension = as.factor(case_when(chronic1 == 2 ~ "No", 
+                                             chronic1 == 1 ~ "Yes")),
+         diabetes = as.factor(case_when(chronic3 == 2 ~ "No", 
+                                        chronic3 == 1 ~ "Yes")),
+         asthma = as.factor(case_when(chronic4 == 2 ~ "No", 
+                                      chronic4 == 1 ~ "Yes")),
+         tobacco = factor(case_when(tobacco1 == 3 ~ "Never",
+                                       tobacco1 == 2 ~ "Some days",
+                                       tobacco1 == 1 ~ "Most days (or all days)"),
+                          levels = c("Never", "Some days", "Most days (or all days)", NA)),
+         alcohol = factor(case_when(alcohol1 == 3 ~ "Never", 
+                                    alcohol1 == 2 ~ "Some days",
+                                    alcohol1 == 1 ~ "Most days (or all days)"),
+                          levels = c("Never", "Some days", "Most days (or all days)", NA)),
+         sex = as.factor(case_when(dem3 == 1 ~ "Male", dem3 == 2 ~ "Female")), 
+                         # 1 = males are reference; 2 = females -- completely filled feature
+         ethnicity = factor(case_when(dem4 == 2 ~ "Not Hispanic or Latino",
+                                     dem4 == 1 ~ "Hispanic or Latino"), 
+                           levels = c("Not Hispanic or Latino", "Hispanic or Latino", NA)),
+         born_US = factor(case_when(dem8 == 1 ~ "USA",
+                                    dem8 == 2 ~ "Outside USA"), 
+                                    levels = c("USA", "Outside USA", NA)),
+         activity = factor(case_when(habits5 == 4 ~ "Not active at all",
+                                    habits5 == 3 ~ "Not very active",
+                                    habits5 == 2 ~ "Somwhat active",
+                                    habits5 == 1 ~ "Very active"),
+                          levels = c("Not active at all","Not very active",
+                                     "Somwhat active","Very active",NA)),
+         agegroup = factor(case_when(agegroup == 1 ~ "18-24",
+                                     agegroup == 2 ~ "25-44",
+                                     agegroup == 3 ~ "45-64",
+                                     agegroup == 4 ~ "65+"),
+                           levels = c("18-24", "25-44", "45-64", "65+")),
+         povertygroup = as.factor(case_when(povertygroup == 1 ~ "<100%",
+                                            povertygroup == 2 ~ "100-199%",
+                                            povertygroup == 3 ~ "200-399%",
+                                            povertygroup == 4 ~ "400-599%",
+                                            povertygroup == 5 ~ "600% +"))) %>%
+  select(-c(chronic1, chronic3, chronic4, tobacco1, alcohol1, 
+            habits5, habits7, dem3, dem4, dem8, x1)) %>%
+  na.omit(healthydays)
+
+# our outcome of interest is healthydays -- the 744 NA's are removed, n = 3067
+# habits7 for rating diet on a likert scale was taken out because the data were 91.5% NA's
+# gpaq11days: During the last 7 days, on how many days did you walk to get to and from places? 
+# gpaq8totmin: Minutes of total physical activity on home chores on an average day
+
+```
+
+**Splitting the data into training and testing (70/30).**
+
+```{r}
+set.seed(1234)
+
+train.indices <- 
+  createDataPartition(y = dat$healthydays, p=0.7, list=FALSE) %>%
+  as.vector()
+
+training <- dat[train.indices,]
+testing <- dat[-train.indices,]
+```
+
+
+# Part I
+**Implementing a Simple Prediction Pipeline**
+
+### Problem 1. 
+
+Fit two prediction models using  different subsets of the features in the training data. Features can overlap in the two models, but the feature sets should not be exactly the same across models. Clearly state which features were used in the two models.
+
+* Model 1: Including `bmi`, `povertygroup`, `ethnicity`, `sex`, `tobacco`, and `activity`
+* Model 2: Including `bmi`, `povertygroup`, `agegroup`, and `sex`
+```{r, message = FALSE}
+model.1 <- 
+  glm(healthydays ~ bmi + tobacco + sex + ethnicity + gpaq8totmin + povertygroup + activity, 
+      family = poisson, data = training)
+model.1 %>% broom::tidy()
+
+model.2 <- 
+  glm(healthydays ~ bmi + povertygroup + ethnicity + sex, family=poisson, data=training)
+model.2 %>% broom::tidy()
+
+```
+
+### Problem 2. 
+
+Applying both models within the test data and determine which model is the preferred prediction model using the appropriate evaluation metric. 
+
+```{r}
+fitted.results1 <- predict(model.1, testing, type='response')
+fitted.results2 <- predict(model.2, testing, type='response')
+
+rmse_model1 <- sqrt(mean((testing$healthydays - fitted.results1)^2, na.rm=TRUE))
+rmse_model2 <- sqrt(mean((testing$healthydays - fitted.results2)^2, na.rm=TRUE))
+
+```
+
+I am evaluating my models using the root mean-squared error (RMSE). 
+
+* The RMSE for my first model including `bmi`, `povertygroup`, `ethnicity`, `sex`, `tobacco`, and `activity` is `r round(rmse_model1, 4)`.
+* The RMSE for my second model including `bmi`, `povertygroup`, `agegroup`, and `sex` is `r round(rmse_model2, 4)`. 
+
+The RMSE for model 1 is less than that of model 2, hence **model 1 is the preferred prediction model**.
+
+### Problem 3.
+
+The implementation of my final model would be useful in a public health setting if we wanted to predict the number of days in a month an individual reports good health, with basic health information including BMI and minutes of activity, demographic information including sex, ethnicity, and poverty level, as well as lifestyle information including smoking status.
+
+# Part II
+
+### Problem 4.
+```{r}
+data("USArrests")
+
+# Checking means and SDs to determine if scaling is necessary
+colMeans(USArrests, na.rm=TRUE)
+apply(USArrests, 2, sd, na.rm=TRUE)
+```
+
+Looking at the means and standard deviations of the features in the `USArrests` dataset, we should standardize because the values vary by quite a lot. If we do not, it is likely Assault will dominate when we create clusters due to its large magnitude.
+
+```{r}
+arrests_pca <- prcomp( ~., data = USArrests, center=TRUE, scale=TRUE, na.action=na.omit) 
+
+#Generates scree plot
+fviz_eig(arrests_pca)
+
+summary(arrests_pca)
+  # we are more concerned with the cumulative proportion...
+  # or can look at standard deviation -- cut off at 1, which is at PC2?
+
+# Identify how features loaded on the different components
+arrests_pca$rotation
+
+ggbiplot(arrests_pca)
+```
+
+After looking at the scree plot and the results of the principal components analysis, it seems like the best number of principal components is 2. The resulting data from the PCA with the scaling is `arrests_pca$x`.
+
+**Hierarchical clustering using complete linkage**
+
+```{r, fig.width = 16, fig.height = 6, fig.align='center', fig.show='hold'}
+# Create Dissimilarity matrix
+diss.matrix <- dist(arrests_pca$x, method = "euclidean")
+
+gap_stat <- clusGap(arrests_pca$x, FUN = hcut, hc_method="complete", K.max = 10, B = 50)
+fviz_gap_stat(gap_stat)
+
+# Hierarchical clustering using Complete Linkage
+clusters.hcut <- hcut(arrests_pca$x, k=2, hc_func="hclust", hc_method="complete", hc_metric="euclidian")
+clusters.hcut$size
+fviz_dend(clusters.hcut, rect=TRUE) + fviz_cluster(clusters.hcut)
+
+input.feature.vals <- 
+  bind_cols(USArrests, cluster=clusters.hcut$cluster)
+
+input.feature.vals %>%
+  group_by(cluster) %>%
+  summarise_all(mean)
+```
+
+The optimal number of clusters in this example using complete linkage is 2. 
+
+* Cluster 1 has an average of 68.3% urban population, 12.3 murder arrests, 259 assault arrests, and 68.3 rape arrests (per 100,000).
+* Cluster 2 has an average of 63.8% urban population, 5 murder arrests, 116 assault arrests, and 16.3 rape arrests (per 100,000).
+* It seems that the difference between these two clusters is that the states in Cluster 2 have less serious crime arrests in general. The percent urban population for the two clusters seems similar.
+
+
+**Hierarchical clustering using average linkage**
+
+```{r, fig.width = 16, fig.height = 6, fig.align='center', fig.show='hold'}
+gap_stat_avg <- clusGap(arrests_pca$x, FUN = hcut, hc_method="average", K.max = 10, B = 50)
+fviz_gap_stat(gap_stat_avg)
+
+# Hierarchical clustering using Complete Linkage
+clusters.hcutavg <- hcut(arrests_pca$x, k=2, hc_func="hclust", hc_method="average", hc_metric="euclidian")
+clusters.hcutavg$size
+fviz_dend(clusters.hcutavg, rect=TRUE) + fviz_cluster(clusters.hcutavg)
+
+input.feature.vals.avg <- 
+  bind_cols(USArrests, cluster=clusters.hcutavg$cluster)
+
+input.feature.vals.avg %>%
+  group_by(cluster) %>%
+  summarise_all(mean)
+```
+
+The optimal number of clusters in this example using average linkage is 2. 
+
+* Cluster 1 has an average of 68.4% urban population, 12.2 murder arrests, 255 assault arrests, and 29.2 rape arrests (per 100,000).
+* Cluster 2 has an average of 63.6% urban population, 4.87 murder arrests, 114 assault arrests, and 15.9 rape arrests (per 100,000).
+* It seems that the difference between these two clusters is that the states in Cluster 2 have less serious crime arrests in general. The percent urban population for the two clusters seems similar.
+
+Overall, when comparing these two linkages (complete versus average), the results seem very similar. Both types of linkages yield 2 clusters as the optimal number, and the difference between the two clusters seems to be that Cluster 1 has more serious crime arrests in all three types than Cluster 2. Furthermore, Cluster 1 has a slightly larger proportion of urban residents than Cluster 2 using both linkage methods.
+
+### Problem 5.
+
+A research question that can be addressed using these two newly identified clusters is: **Do clusters of states' serious arrests rates predict obesity rates in the United States?**
+
+An ethical consideration one should review before using these clusters to answer this research question is what these averages represent. In particular, it would be important to review the racial make-up of these arrests and the urban population. It is likely that the BIPOC population faces greater health disparities than the white population, on top of innocent black people being 7 times more likely to be convicted of murder and 3.5 times more likely to be convicted of sexual assault than their white counterparts (source: https://www.vox.com/policy-and-politics/2017/3/7/14834454/exoneration-innocence-prison-racism).
+
+Another scientific consideration to review would be how the data were collected and aggregated. Pretending that these data are from 2020, it is easier to double-check these numbers with state-level data to perform some sort of data-audit. This will ensure that the aggregated state arrests for these serious crimes are accurate.

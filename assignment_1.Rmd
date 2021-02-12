@@ -1,0 +1,143 @@
+---
+title: "Intro to Epi Machine Learning Assignment 1"
+author: "Sydney Ng (uni: sn2863)"
+date: "Due January 19, 2021 by 5:00 PM"
+output: 
+  html_document: 
+    toc: TRUE
+    toc_float: TRUE
+---
+
+```{r message = FALSE}
+library(tidyverse)
+
+patricio <- read_csv("./bcdata_Assignment1.csv") %>% # name of primary author is Patricio
+  janitor::clean_names() %>%
+  mutate(classification = if_else(classification == 2, "Breast Cancer patients", "Healthy controls"))
+```
+
+### Question 1. 
+
+**Construct a table providing summaries of the quantitative features of the dataset. Summaries should include the mean, median, minimum value, and maximum value.**
+
+```{r}
+average <- numeric(9)
+median <- numeric(9)
+minimum <- numeric(9)
+maximum <- numeric(9)
+
+for (i in 1:9){
+  average[i] <- round(mean(pull(patricio, i)), 2)
+  median[i] <- round(median(pull(patricio, i)), 2)
+  minimum[i] <- round(min(pull(patricio, i)), 2)
+  maximum[i] <- round(max(pull(patricio, i)), 2)
+}
+
+cbind(colnames(patricio[,1:9]), average, median, minimum, maximum) %>%
+  knitr::kable() # neater than just using summary()
+
+```
+
+### Question 2. 
+
+**Recode BMI into the WHO-defined categories.**
+
+```{r, message = FALSE, warning = FALSE}
+patricio <-
+  patricio %>%
+  mutate(bmi_cat = case_when(bmi < 16.5 ~ "Severely underweight",
+                             bmi < 18.5 ~ "Underweight",
+                             bmi < 24.9 ~ "Normal weight",
+                             bmi < 29.9 ~ "Overweight",
+                             bmi < 34.9 ~ "Obesity class I",
+                             bmi < 39.9 ~ "Obesity class II",
+                             bmi >- 40 ~ "Obesity class III"))
+
+patricio$bmi_cat <- 
+  fct_relevel(patricio$bmi_cat, # reordering the BMI categories
+              levels = c("Severely underweight",
+                         "Underweight",
+                         "Normal weight",
+                         "Overweight",
+                         "Obesity class I",
+                         "Obesity class II",
+                         "Obesity class III"))
+```
+
+After recoding BMI into the WHO-defined categories, we get the following distribution of categories. There are no severely underweight or obesity class III individuals in the data.
+
+```{r, message = FALSE}
+patricio %>%
+  group_by(bmi_cat) %>%
+  summarize(frequency = n()) %>%
+  knitr::kable()
+```
+
+### Question 3. 
+
+**Create a bar chart showing the proportion of breast cancer cases and controls within each BMI category.**
+
+```{r}
+patricio %>%
+  ggplot(aes(x = bmi_cat)) +
+  geom_bar(aes(fill = classification, 
+               y=(..count..)/sum(..count..)),
+           position = "dodge") +
+  scale_y_continuous(labels = scales::percent) +
+  theme(legend.position = "bottom") +
+  labs(
+    x = "BMI category",
+    y = "Proportion"
+  )
+```
+
+Looking at the bar chart and further into the data, there are no healthy controls who are underweight. We also have no obesity class III individuals in the study data overall.
+
+### Question 4. 
+
+**Construct a logistic regression model using breast cancer classification as the outcome and glucose, HOMA, leptin, BMI (continuous) and age as the independent variables. Fill in the beta estimate and 95% confidence interval associated with a 1-unit change in HOMA.**
+
+```{r}
+logistic_df <- 
+  patricio %>%
+  mutate(class_bin = if_else(classification == "Healthy controls", 0, 1))
+  
+glm(class_bin ~ glucose + homa + leptin + bmi + age,
+    data = logistic_df,
+    family = binomial) %>%
+  broom::tidy() %>%
+  slice(3) %>% # only pulling out estimate and 95% CI for HOMA
+  mutate(CI_lower = estimate - 1.96*std.error,
+         CI_upper = estimate + 1.96*std.error,
+         OR_hat = exp(estimate),
+         CI_OR_lower = exp(estimate - 1.96*std.error),
+         CI_OR_upper = exp(estimate + 1.96*std.error)
+  ) %>%
+  select(term, estimate, CI_lower, CI_upper, OR_hat, CI_OR_lower, CI_OR_upper) %>%
+  knitr::kable(digits = 3)
+```
+
+The estimated beta coefficient estimate for the log-odds of being a breast cancer patient for every 1-unit change in HOMA is 0.274. This means after controlling for glucose, leptin, continuous BMI, and age, the log-odds of being a breast cancer patient increases by 0.274 for every 1-unit increase in HOMA. We are 95% confident that this true log-odds change lies between -0.063 and 0.611.
+
+We can also exponential the estimated beta coefficient to calculate the corresponding odds ratio and its 95% confidence interval.
+
+
+### Question 5.
+
+**Construct a linear regression model using insulin as the outcome and BMI (continuous), age, and glucose as the independent variables. Fill in the beta estimate and 95% confidence interval associated with a 1-unit change in age.**
+
+```{r}
+glm(insulin ~ bmi + age + glucose,
+    data = patricio,
+    family = gaussian) %>%
+  broom::tidy() %>%
+  slice(3) %>% # only want the estimate and 95% CI for age
+  mutate(CI_lower = estimate - 1.96*std.error,
+         CI_upper = estimate + 1.96*std.error
+  ) %>%
+  select(term, estimate, starts_with("CI")) %>%
+  knitr::kable(digits = 3)
+```
+
+The estimated beta coefficient for glucose for every 1-unit change in age is -0.054. This means after controlling for continuous BMI and glucose, for every 1-unit increase in age, insulin decreases by 0.054. We are 95% confident that the true change in glucose for every 1-unit increase in age lies between -0.156 and 0.048.
+
