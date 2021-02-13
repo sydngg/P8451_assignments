@@ -1,0 +1,158 @@
+---
+title: "Epi Machine Learning Assignment 5"
+author: "Sydney Ng (uni: sn2863)"
+date: "Due February 16, 2021 by 5:30 PM"
+output: 
+  html_document: 
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: show
+---
+
+```{r, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(Amelia) # good for missing data
+library(caret)
+library(ggbiplot)
+library(glmnet)
+```
+
+```{r import_split, message=F, warning=F}
+alc <- read_csv("./alcohol_use.csv") %>%
+  select(-X1) %>%
+  mutate(alc_consumption = factor(alc_consumption, levels = c("NotCurrentUse", "CurrentUse")))
+
+# splitting into testing and training 80/20
+set.seed(1234)
+
+train.indices <- 
+  createDataPartition(y = alc$alc_consumption, p=0.8, list=FALSE) %>%
+  as.vector()
+
+training <- alc[train.indices,]
+testing <- alc[-train.indices,]
+
+# storing the outcome
+alc_consumption_train <- training$alc_consumption
+alc_consumption_test <- testing$alc_consumption
+
+# model.matrix shortcut to remove outcome variable from matrix
+x.train <- model.matrix(alc_consumption~., training)[,-1]
+x.test <- model.matrix(alc_consumption~., testing)[,-1]
+```
+
+# Model 1.
+
+**A model that chooses alpha and lambda via cross-validation using all of the features.**
+
+```{r mod1_cv}
+set.seed(1234)
+
+en.model <- train(
+  alc_consumption ~., data = training, method = "glmnet", 
+  family = "binomial", # for binary outcome -- logistic regression
+  trControl = trainControl("cv", number = 10),
+  tuneLength=10 # tunelength: 10 different vales of both alpha and lambda to compare
+  )
+
+alpha_lambda_mod1 <- en.model$bestTune # Printing the alpha and lambda that gave best prediction
+```
+
+### Cross-validation model results and predictions.
+
+```{r mod1_predictions}
+# Model coefficients
+coef(en.model$finalModel, en.model$bestTune$lambda)
+
+# Make predictions
+en.pred <- en.model %>% predict(x.test)
+
+# Model prediction performance using a confusion matrix
+confusion_mod1 <- confusionMatrix(en.pred, testing$alc_consumption, positive="CurrentUse")
+confusion_mod1$table
+```
+
+
+For this first model, we perform cross-validation to choose the best tuning parameters for alpha and lambda to be `r alpha_lambda_mod1$alpha` and `r alpha_lambda_mod1$lambda`, respectively. 
+
+We also see that from the training dataset, the model we obtain from the cross-validation shrinks the features of extroversion, openness, agreeableness, and conscientiousness scores. Only impulsiveness and sensation-seeking scores are in the final model.
+
+After applying our model to the testing dataset, we find that it is `r round(confusion_mod1$overall[1]*100, 2)`% accurate in predicting alcohol consumption status, with a sensitivity and specificity of `r round(confusion_mod1$byClass[1], 2)` and `r round(confusion_mod1$byClass[2], 2)`, respectively.
+
+# Model 2.
+
+**A model that uses all the features and traditional logistic regression.**
+
+```{r mod2_logistic_reg}
+mod2_glm <- glm(alc_consumption ~ ., data = training, family = "binomial")
+mod2_glm$coefficients
+```
+
+### Logistic regression results and predictions.
+
+<span style="color: red;">CHECK ON THIS -- why are all the predictions "NotCurrentUse"?</span>
+
+```{r mod2_predictions}
+mod2_pred <- 
+  predict(mod2_glm, newdata = testing, type = "response", se.fit = F) %>%
+  as.data.frame()
+
+# compare the values to 1 because this produces estimated odds ratios (not log(OR))
+mod2_pred <-
+  mod2_pred %>%
+  mutate(prediction = factor(ifelse(mod2_pred > 1,"CurrentUse","NotCurrentUse"),
+                            levels = c("NotCurrentUse", "CurrentUse")))
+
+# Model prediction performance using a confusion matrix
+confusion_mod2 <- confusionMatrix(mod2_pred$prediction, testing$alc_consumption, positive="CurrentUse")
+confusion_mod2$table
+```
+
+After applying our traditional logistic regression model to the testing dataset, we find that it is `r round(confusion_mod2$overall[1]*100, 2)`% accurate in predicting alcohol consumption status, with a sensitivity and specificity of `r round(confusion_mod2$byClass[1], 2)` and `r round(confusion_mod2$byClass[2], 2)`, respectively. This means that it correctly classified all those who were truly not current alcohol consumers but it incorrectly classified all those who were current alcohol consumers.
+
+# Model 3.
+
+**A lasso model using all of the features.**
+
+```{r mod3_lasso}
+set.seed(1234)
+
+mod3_cv <- cv.glmnet(x.train, alc_consumption_train, alpha = 1, family = "binomial")
+plot(mod3_cv)
+lambda_mod3 <- mod3_cv$lambda.1se
+
+mod3 <- glmnet(x.train, alc_consumption_train, alpha = 1, family = "binomial", 
+               lambda=mod3_cv$lambda.1se)
+
+```
+
+### Lasso model results and predictions.
+
+```{r mod3_predictions}
+coef(mod3) # model coefficients
+
+# Make predictions
+mod3_pred <- 
+  mod3 %>% 
+  predict(x.test) %>%
+  data.frame()
+
+# compare the values to 0 because this produces estimated log(OR)
+mod3_pred <-
+  mod3_pred %>%
+  mutate(prediction = factor(ifelse(mod3_pred > 0,"CurrentUse","NotCurrentUse"),
+                            levels = c("NotCurrentUse", "CurrentUse")))
+
+# Model prediction performance using a confusion matrix
+confusion_mod3 <- confusionMatrix(mod3_pred$prediction, testing$alc_consumption, positive="CurrentUse")
+confusion_mod3$table
+```
+
+For this third lasso regression model, we perform cross-validation to choose the best tuning parameter for lambda to be `r lambda_mod3`. We also see that this model shrinks down the features of neurotocism, openness, agreeableness, and conscientiousness scores and contains extroversion, impulsiveness, and sensation-seeking scores.
+
+After applying our lasso logistic regression model to the testing dataset, we find that it is `r round(confusion_mod3$overall[1]*100, 2)`% accurate in predicting alcohol consumption status, with a sensitivity and specificity of `r round(confusion_mod3$byClass[1], 2)` and `r round(confusion_mod3$byClass[2], 2)`, respectively.
+
+# Final Model and Comments.
+
+
+
