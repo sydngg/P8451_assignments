@@ -41,6 +41,18 @@ x.train <- model.matrix(alc_consumption~., training)[,-1]
 x.test <- model.matrix(alc_consumption~., testing)[,-1]
 ```
 
+
+```{r}
+alc_features <- alc %>% select(-alc_consumption)
+
+# Checking means and SDs to determine if scaling is necessary
+colMeans(alc_features, na.rm=TRUE)
+apply(alc_features, 2, sd, na.rm=TRUE)
+
+```
+
+Looking at the means and standard deviations of the features in the data, we see that the standard deviations are very close to each other but the mean scores seem to vary. Standardization is implemented throughout the models to account for the differences in magnitude for the features.
+
 # Model 1.
 
 **A model that chooses alpha and lambda via cross-validation using all of the features.**
@@ -52,6 +64,7 @@ en.model <- train(
   alc_consumption ~., data = training, method = "glmnet", 
   family = "binomial", # for binary outcome -- logistic regression
   trControl = trainControl("cv", number = 10),
+  standardize = TRUE,
   tuneLength=10 # tunelength: 10 different vales of both alpha and lambda to compare
   )
 
@@ -77,7 +90,7 @@ For this first model, we perform cross-validation to choose the best tuning para
 
 We also see that from the training dataset, the model we obtain from the cross-validation shrinks the features of extroversion, openness, agreeableness, and conscientiousness scores. Only impulsiveness and sensation-seeking scores are in the final model.
 
-After applying our model to the testing dataset, we find that it is `r round(confusion_mod1$overall[1]*100, 2)`% accurate in predicting alcohol consumption status, with a sensitivity and specificity of `r round(confusion_mod1$byClass[1], 2)` and `r round(confusion_mod1$byClass[2], 2)`, respectively.
+After applying our model to the testing dataset, we find that it is `r round(confusion_mod1$overall[1]*100, 2)`% accurate in predicting alcohol consumption status, with a sensitivity and specificity of `r round(confusion_mod1$byClass[1]*100, 2)`% and `r round(confusion_mod1$byClass[2]*100, 2)`%, respectively.
 
 # Model 2.
 
@@ -90,17 +103,15 @@ mod2_glm$coefficients
 
 ### Logistic regression results and predictions.
 
-<span style="color: red;">CHECK ON THIS -- why are all the predictions "NotCurrentUse"?</span>
-
 ```{r mod2_predictions}
 mod2_pred <- 
   predict(mod2_glm, newdata = testing, type = "response", se.fit = F) %>%
   as.data.frame()
 
-# compare the values to 1 because this produces estimated odds ratios (not log(OR))
+# compare the values to 0.5 because it is a probability
 mod2_pred <-
   mod2_pred %>%
-  mutate(prediction = factor(ifelse(mod2_pred > 1,"CurrentUse","NotCurrentUse"),
+  mutate(prediction = factor(ifelse(mod2_pred > 0.5,"CurrentUse","NotCurrentUse"),
                             levels = c("NotCurrentUse", "CurrentUse")))
 
 # Model prediction performance using a confusion matrix
@@ -108,7 +119,9 @@ confusion_mod2 <- confusionMatrix(mod2_pred$prediction, testing$alc_consumption,
 confusion_mod2$table
 ```
 
-After applying our traditional logistic regression model to the testing dataset, we find that it is `r round(confusion_mod2$overall[1]*100, 2)`% accurate in predicting alcohol consumption status, with a sensitivity and specificity of `r round(confusion_mod2$byClass[1], 2)` and `r round(confusion_mod2$byClass[2], 2)`, respectively. This means that it correctly classified all those who were truly not current alcohol consumers but it incorrectly classified all those who were current alcohol consumers.
+After applying our traditional logistic regression model to the testing dataset, we find that it is `r round(confusion_mod2$overall[1]*100, 2)`% accurate in predicting alcohol consumption status, with a sensitivity and specificity of `r round(confusion_mod2$byClass[1]*100, 2)`% and `r round(confusion_mod2$byClass[2]*100, 2)`%, respectively. 
+
+Note that standardization was not implemented, as we do not normally standardize when creating a traditional logistic regression model (like in Epi and Biostats).
 
 # Model 3.
 
@@ -117,11 +130,13 @@ After applying our traditional logistic regression model to the testing dataset,
 ```{r mod3_lasso}
 set.seed(1234)
 
-mod3_cv <- cv.glmnet(x.train, alc_consumption_train, alpha = 1, family = "binomial")
+mod3_cv <- cv.glmnet(x.train, alc_consumption_train, alpha = 1,
+                     family = "binomial", standardize = TRUE)
 plot(mod3_cv)
 lambda_mod3 <- mod3_cv$lambda.1se
 
 mod3 <- glmnet(x.train, alc_consumption_train, alpha = 1, family = "binomial", 
+               standardize = TRUE,
                lambda=mod3_cv$lambda.1se)
 
 ```
@@ -150,9 +165,23 @@ confusion_mod3$table
 
 For this third lasso regression model, we perform cross-validation to choose the best tuning parameter for lambda to be `r lambda_mod3`. We also see that this model shrinks down the features of neurotocism, openness, agreeableness, and conscientiousness scores and contains extroversion, impulsiveness, and sensation-seeking scores.
 
-After applying our lasso logistic regression model to the testing dataset, we find that it is `r round(confusion_mod3$overall[1]*100, 2)`% accurate in predicting alcohol consumption status, with a sensitivity and specificity of `r round(confusion_mod3$byClass[1], 2)` and `r round(confusion_mod3$byClass[2], 2)`, respectively.
+After applying our lasso logistic regression model to the testing dataset, we find that it is `r round(confusion_mod3$overall[1]*100, 2)`% accurate in predicting alcohol consumption status, with a sensitivity and specificity of `r round(confusion_mod3$byClass[1]*100, 2)`% and `r round(confusion_mod3$byClass[2]*100, 2)`%, respectively.
 
 # Final Model and Comments.
 
+I would choose **the first model** using cross-validation for both alpha and lambda as my final model. 
 
+The first model yields the highest prediction accuracy at 85.9% and the highest sensitivity at 100%. It also still has a comparable specificity of 69.89% versus 81.0% from the traditional logistic regression model and 83.52% from the lasso model.
 
+We also used cross-validation to choose both tuning parameters of alpha and lambda, whereas the third model used cross-validation to only choose lambda (Lasso implies alpha = 1) which many not be as optimal for prediction. The first prediction model is also more efficient in prediction because it has two features whereas the third model has three, and the traditional logistic regression uses all the features. 
+
+# Possible Research Questions.
+
+A research question that this analysis could directly address is: 
+
+* What personality traits predict alcohol consumption status?
+
+A research question that this analysis could indirectly address by providing information for a subsequent analysis is:
+
+* Does an individual's personality have an effect on alcohol use?
+* What psychological measures can be used to predict substance use status?
