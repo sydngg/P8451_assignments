@@ -1,0 +1,217 @@
+---
+title: "Epi Machine Learning Assignment 6"
+author: "Sydney Ng (uni: sn2863)"
+date: "Due February 23, 2021 by 5:30 PM"
+output: 
+  html_document: 
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: show
+---
+
+```{r setup, echo=FALSE, message=FALSE}
+library(tidyverse)
+library(NHANES)
+library(caret)
+library(Amelia) # good for missing data
+library(rpart) # for trees
+library(rpart.plot) # for visualizing trees
+library(e1071) # contains the svm function
+
+data(NHANES)
+```
+
+# Cleaning and Visualizing Data.
+```{r cleaning_missings, message=FALSE, warning=FALSE}
+nhanes <- 
+  NHANES %>%
+  select("Age", "Race1", "Education", "HHIncome", "Weight", "Height", "Pulse", 
+         "Diabetes", "BMI", "PhysActive", "Smoke100") %>%
+  janitor::clean_names()
+
+missmap(nhanes, main = "Missing values vs observed") # easy and quick way to look at missing values
+
+nhanes <- 
+  nhanes %>%
+  drop_na(diabetes) %>%
+  na.omit() # 6,356 observations after dropping missing values
+
+
+# checking if we need to center and scale
+
+nhanes_numeric <- nhanes %>% dplyr::select(where(is.numeric))
+nhanes_not_numeric <- nhanes %>% dplyr::select(!where(is.numeric))
+correlations <- cor(nhanes_numeric, use="complete.obs")
+high_correlations<-findCorrelation(correlations, cutoff=0.4)
+
+colMeans(nhanes_numeric, na.rm=TRUE)
+apply(nhanes_numeric, 2, sd, na.rm=TRUE)
+
+#Centering and Scaling
+set.up.preprocess <- preProcess(nhanes_numeric, method=c("center", "scale"))
+#Output pre-processed values
+transformed_vals<-predict(set.up.preprocess, nhanes_numeric)
+nhanes_transformed <- bind_cols(transformed_vals, nhanes_not_numeric)
+
+# checking the distribution of diabetes outcome
+
+distribution_diabetes <-
+  nhanes %>%
+  group_by(diabetes) %>%
+  summarise(count = n(),
+            proportion = count/nrow(nhanes))
+
+distribution_diabetes
+```
+
+The outcome of interest `diabetes` had 142 NA values. After dropping these observations, there were `r nrow(nhanes)` observations left in the NHANES dataset.
+
+We can also see that the means and standard deviations of the numeric variables are very different, therefore we will center and scale.
+
+Checking the distribution of `diabetes`, we see that there is an imbalance where `r round(distribution_diabetes$proportion[1]*100,2)`% of the observations do not have diabetes and the other `r round(distribution_diabetes$proportion[2]*100,2)`% does have diabetes. When splitting the data, we need to keep the distribution of the outcome the same in both the training and testing datasets.
+
+**Splitting the data.**
+```{r splitting, message=FALSE, warning=FALSE}
+set.seed(100)
+train_indices <- createDataPartition(y=nhanes_transformed$diabetes, p=0.7, list=FALSE)
+training <- nhanes_transformed[train_indices, ]
+testing <- nhanes_transformed[-train_indices, ]
+
+training %>% group_by(diabetes) %>% summarise(count = n(),
+                                              proportion = count/nrow(training))
+testing %>% group_by(diabetes) %>% summarise(count = n(),
+                                             proportion = count/nrow(testing))
+```
+
+
+# 1. Classification Tree.
+
+```{r classification_tree}
+set.seed(100)
+training_control <- trainControl(method="cv", number=10, sampling="down") # from caret
+hyper_grid <- expand.grid(cp=seq(0.0001, 0.003, by=0.0001)) # choosing hyperparameter from grid method
+tree_diabetes <- train(diabetes ~., data = training, method = "rpart", 
+                       trControl = training_control, tuneGrid = hyper_grid)
+tree_diabetes$bestTune
+varImp(tree_diabetes)
+
+rpart.plot(tree_diabetes$finalModel)
+```
+
+### Classification tree model results.
+
+```{r tree_predictions}
+# Making predictions
+pred_diabetes <- predict(tree_diabetes, training)
+pred_diabetes_probability <- predict(tree_diabetes, training, type="prob")
+
+# Printing the confusion matrix
+results <- confusionMatrix(pred_diabetes, training$diabetes, positive = "Yes")
+print(results)
+```
+
+The classification tree uses a cross-validation optimal parameter of `r tree_diabetes$bestTune` and identifies `age`, `bmi`, and `weight` to be most important variables followed by `pulse`, `height`, and `race White`.
+
+After applying our classification tree model to the training dataset, we find that it is `r round(results$overall[1]*100, 2)`% accurate in predicting diabetes status, with a sensitivity and specificity of `r round(results$byClass[1]*100, 2)`% and `r round(results$byClass[2]*100, 2)`%, respectively.
+
+
+# 2. Support Vector Classifier.
+
+```{r svm}
+set.seed(100)
+train_control <- trainControl(method="cv", number = 10)#, sampling = "down")
+
+svm_caret <- train(diabetes ~ ., data = training, method="svmLinear", 
+                   trControl=train_control, preProcess=c("center", "scale"),
+                   tuneGrid=expand.grid(C = seq(0.00001,2, length=30)))
+
+#svm_caret
+plot(svm_caret)
+```
+
+
+### Support vector classifier results and predictions.
+
+```{r svm_results}
+svm_caret$finalModel
+
+# Making predictions
+svm_training_pred <- predict(svm_caret, newdata = training)
+table(svm_training_pred, training$diabetes)
+
+# Confusion matrix
+confusion_svm <- confusionMatrix(svm_training_pred, training$diabetes, positive="Yes")
+print(confusion_svm)
+```
+
+The support vector machine uses a linear classifier and identifies the optimal hyperparameter for cost to be `r 0.00001` and results in 924 support vectors.
+
+After applying our support vector classifier to the training dataset, we find that it is `r round(confusion_svm$overall[1]*100, 2)`% accurate in predicting diabetes status, with a sensitivity and specificity of `r round(confusion_svm$byClass[1]*100, 2)`% and `r round(confusion_svm$byClass[2]*100, 2)`%, respectively. The sensitivity is especially very low at 0%.
+
+# 3. Logistic Regression.
+
+```{r logistic_regression}
+# Regularized logistic regression
+set.seed(100)
+train_control <- trainControl(method="cv", number = 10) #, sampling = "down")
+logistic_reg <- train(diabetes ~., data = training, 
+                      method = "glmnet", family = "binomial",
+                      trControl = train_control, tuneLength=10)
+logistic_reg$bestTune
+
+```
+
+### Logistic regression results and predictions.
+
+```{r logistic_results}
+# Coefficients for the regularized logistic regression
+coef(logistic_reg$finalModel, logistic_reg$bestTune$lambda)
+
+# Making predictions
+logistic_pred <- logistic_reg %>% predict(training)
+
+# Confusion Matrix
+confusion_logistic <- 
+  confusionMatrix(logistic_pred, training$diabetes,
+                  positive="Yes")
+confusion_logistic$table
+```
+
+It is a good idea to use a regularized logistic regression because there are many features in the model, especially due to dummy variables for factor-level features. The cross-validation in the elastic net algorithm chooses the optimal alpha to be `r logistic_reg$bestTune[1]` and lambda to be `r logistic_reg$bestTune[2]`.
+
+Features that are minimized in this algorithm include `height`, `education` on the high school, college, and graduate levels, and `household income` on multiple levels. Features kept in the model include `age`, `weight`, `pulse`, `bmi`, all levels of `race`, `physical activity`, and `smoking status`. 
+
+After applying this regularized logistic regression model to the training dataset, we find that it is `r round(confusion_logistic$overall[1]*100, 2)`% accurate in predicting diabetes status, with a sensitivity and specificity of `r round(confusion_logistic$byClass[1]*100, 2)`% and `r round(confusion_logistic$byClass[2]*100, 2)`%, respectively. The sensitivity of this model is especially very low.
+
+# Final Model.
+
+My final model is the classification tree. Although it yields the lowest accuracy of the three models, it has the best trade-off between sensitivity and specificity.
+
+```{r comparing_models}
+model <- c("Classification Tree", "Support Vector Classifier", "Regularized Logistic Regression")
+accuracy <- c(results$overall[1], confusion_svm$overall[1], confusion_logistic$overall[1])
+sensitivity <- c(results$byClass[1], confusion_svm$byClass[1], confusion_logistic$byClass[1])
+specificity <- c(results$byClass[2], confusion_svm$byClass[2], confusion_logistic$byClass[2])
+
+data.frame(model, accuracy, sensitivity, specificity)
+```
+
+The classification tree is the most clinically meaningful algorithm because both the support vector classifier and regularized logistic regression have very low sensitivities. In the case when we want to identify those who truly have diabetes, it would be important to have high sensitivity so that patients can receive the correct diagnosis and adequate care. 
+
+```{r final_model_testing}
+# Making predictions
+pred_diabetes_test <- predict(tree_diabetes, testing)
+pred_diabetes_prob_test <- predict(tree_diabetes, testing, type="prob")
+
+# Printing the confusion matrix
+results_test <- confusionMatrix(pred_diabetes_test, testing$diabetes, positive = "Yes")
+print(results_test)
+```
+
+After applying our classification tree model to the training dataset, we find that it is `r round(results_test$overall[1]*100, 2)`% accurate in predicting diabetes status, with a sensitivity and specificity of `r round(results_test$byClass[1]*100, 2)`% and `r round(results_test$byClass[2]*100, 2)`%, respectively.
+
+### Limitations and Comments.
+
+* One limitation of the classification tree is that it is unstable and highly sensitive to changes in data or features. As a result, when adding in more or different information in the training dataset, the classification tree would not be robust to these changes.
+
+* Another limitation of the classification tree is that it treats variables with more values preferentially when making the splits. Therefore, continuous variables will generally be preferred in the algorithm over binary variables. We can also see this occur in the plot of the final model for splits using `pulse`, `bmi`, and `age`.
