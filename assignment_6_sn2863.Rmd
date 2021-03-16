@@ -208,7 +208,7 @@ results_test <- confusionMatrix(pred_diabetes_test, testing$diabetes, positive =
 print(results_test)
 ```
 
-After applying our classification tree model to the training dataset, we find that it is `r round(results_test$overall[1]*100, 2)`% accurate in predicting diabetes status, with a sensitivity and specificity of `r round(results_test$byClass[1]*100, 2)`% and `r round(results_test$byClass[2]*100, 2)`%, respectively.
+After applying our classification tree model to the testing dataset, we find that it is `r round(results_test$overall[1]*100, 2)`% accurate in predicting diabetes status, with a sensitivity and specificity of `r round(results_test$byClass[1]*100, 2)`% and `r round(results_test$byClass[2]*100, 2)`%, respectively.
 
 ### Limitations and Comments.
 
