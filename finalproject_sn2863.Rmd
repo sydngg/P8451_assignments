@@ -1,0 +1,176 @@
+---
+title: "Epi Machine Learning Final Project"
+author: "Sydney Ng UNI: sn2863"
+date: "Due: Monday, April 19, 2021 at 5:00 PM"
+output: 
+  html_document: 
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Part 1: Dietary patterns using unsupervised analysis
+
+### Question 1: Research Question
+What are the patterns in dietary consumption during pregnancy in women and 3-4 years postnatal in children in the birth cohort study?
+
+This is a **description** research question. A hierarchical clustering unsupervised algorithm is most appropriate here because I am most interested in examining the patterns in the dietary consumption features and understanding these clusters in terms of the inputs. This algorithm is relatively simple to visualize and interpret.
+
+### Question 2: PCA and Hierarchical Clustering
+
+```{r load_packages_data, message=FALSE}
+library(tidyverse)
+library(caret)
+library(rpart.plot)
+library(Amelia)
+library(cluster)
+library(factoextra) #scree
+library(ggbiplot) #ggbiplot
+
+rm(list = ls())
+load("./exposome.RData") # Load data using path of where file is stored
+```
+
+
+```{r warning=FALSE}
+diet_df <- read_csv("./diet_data.csv") %>% select(-ID)
+
+# There are no missing values in the data
+
+# Checking correlations
+correlations <- cor(diet_df, use="complete.obs")
+high_correlations <- findCorrelation(correlations, cutoff=0.4) 
+
+# Removing 3 variables: 
+# legume consumption during pregnancy
+# total cereal consumption postnatal
+# processed meat consumption postnatal
+dief_df <- diet_df %>% select(-c(h_legume_preg_Ter,hs_total_cereal_Ter,hs_proc_meat_Ter))
+
+
+# Centering and scaling is a good idea because the means and SDs do not seem similar
+colMeans(diet_df, na.rm=TRUE)
+apply(diet_df, 2, sd, na.rm=TRUE)
+set.up.preprocess <- preProcess(diet_df, method = c("center", "scale"))
+
+# Output pre-processed values
+transformed_df <- predict(set.up.preprocess, diet_df) %>%
+  select(-c(h_legume_preg_Ter,hs_total_cereal_Ter,hs_proc_meat_Ter))
+
+# ----------------------------------------------------
+# Implementing a PCA for feature
+diet_pca <- prcomp( ~., data=transformed_df, center=TRUE, scale=TRUE,) 
+  # only the features we are interested in reducing, not the outcome
+
+#Can compare sds used to scale with the sds above to ensure they are close.
+diet_pca$scale
+
+#Generates scree plot
+fviz_eig(diet_pca)
+
+#view results of pca. Note the first three components are needed to explain at least 75% of the variance
+summary(diet_pca)
+  # we are more concerned with the cumulative proportion...
+  # or can look at standard deviation -- cut off at 1, which is at PC9
+
+#Identify how features loaded on the different components
+diet_pca_df <- diet_pca$rotation[,1:16]
+ggbiplot(diet_pca, choices=c(16,17))
+
+# ----------------------------------------------------
+# Implementing the hierarchical clustering
+set.seed(100) # setting for replicability
+
+# Create function to use within clusGap to identify the optimal number of clusters
+hclusCut <- 
+  function(x, k) list(cluster = cutree(hclust(dist(x, method="euclidian"), method="complete"), k=k))
+gap_stat <- clusGap(transformed_df, # replace with PCA data frame here?
+                    FUN = hclusCut, K.max = 10, B = 50)
+
+# Identifying 5 as the optimal number of clusters
+fviz_gap_stat(gap_stat)
+
+clusters.hcut <- hcut(transformed_df, k=3, hc_func="hclust", hc_method="complete", hc_metric="euclidian")
+clusters.hcut$size
+
+fviz_cluster(clusters.hcut)
+```
+
+
+### Question 3: Outputs
+
+Describe the outputs of the analysis in terms of their composition of the input features.
+
+```{r describing_clustering}
+input.feature.vals <- 
+  bind_cols(diet_df, cluster=clusters.hcut$cluster)
+
+input.feature.vals %>%
+  group_by(cluster) %>%
+  summarise_all(mean)
+```
+
+
+# Part 2: Choose your own supervised adventure
+
+### Research Question:
+What are the lifestyle and built environment features that best predict childhood obesity in children 6-11 years old?
+
+My final project rationale is hypothesis generating about how lifestyle and built environment factors contribute to childhood obesity to inform future research on how individuals' day-to-day surrounding built environments can interact with their lifestyles. I will be using a Random Forest for classification.
+
+### Data Cleaning and Processing
+
+```{r cleaning_processing, message=FALSE, warning=FALSE}
+studydata <- merge(exposome,phenotype,by="ID") %>% 
+  merge(covariates, by="ID") %>% 
+  mutate(hs_asthma = as.factor(hs_asthma)) %>%
+  select(-ID)
+
+builtenv_lifestyle_vars <- 
+  codebook %>% filter(family %in% c("Lifestyle", "Built environment")) %>% rownames()
+
+builtenv_lifestyle <- 
+  studydata %>% 
+  select(builtenv_lifestyle_vars) %>%
+  mutate(pet_allergen = case_when(hs_pet_cat_r2_None == "0" ~ 0,
+                                  hs_pet_cat_r2_None == "1" ~ 1,
+                                  hs_pet_dog_r2_None == "0" ~ 0,
+                                  hs_pet_dog_r2_None == "1" ~ 1,
+                                  hs_pet_None == "No" ~ 0,
+                                  hs_pet_None == "Yes" ~ 1)) %>%
+  select(-c(hs_pet_cat_r2_None, hs_pet_dog_r2_None, hs_pet_None))
+
+# Correlations
+dat_num <- builtenv_lifestyle %>% select(where(is.numeric))
+dat_not_num <- builtenv_lifestyle %>% select(!where(is.numeric))
+
+correlations <- cor(dat_num, use="complete.obs")
+high_correlations <- findCorrelation(correlations, cutoff=0.5) 
+
+# Removing 16 highly correlated columns based off a correlation cutoff of 0.5
+dat_num <- dat_num[-high_correlations] 
+
+# Centering and Scaling
+set.up.preprocess <- preProcess(dat_num, method = c("center", "scale"))
+
+# Output pre-processed values
+transformed_vals <- predict(set.up.preprocess, dat_num)
+
+# Checking overlapping categorical variables
+summary(dat_not_num)
+transform_df <- bind_cols(transformed_vals, dat_not_num) # 45 variables
+
+```
+
+### Implementing a Random Forest
+```{r random_forest}
+
+```
+
+
+
+
