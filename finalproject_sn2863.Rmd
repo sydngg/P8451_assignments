@@ -20,7 +20,7 @@ What are the patterns in dietary consumption during pregnancy in women and 3-4 y
 
 This is a **description** research question. A hierarchical clustering unsupervised algorithm is most appropriate here because I am most interested in examining the patterns in the dietary consumption features and understanding these clusters in terms of the inputs. This algorithm is relatively simple to visualize and interpret.
 
-### Question 2: PCA and Hierarchical Clustering
+### Question 2: Implementing PCA & Hierarchical Clustering
 
 ```{r load_packages_data, message=FALSE}
 library(tidyverse)
@@ -36,21 +36,8 @@ load("./exposome.RData") # Load data using path of where file is stored
 ```
 
 
-```{r warning=FALSE}
+```{r pca_unsupervised, warning=FALSE, message=FALSE}
 diet_df <- read_csv("./diet_data.csv") %>% select(-ID)
-
-# There are no missing values in the data
-
-# Checking correlations
-correlations <- cor(diet_df, use="complete.obs")
-high_correlations <- findCorrelation(correlations, cutoff=0.4) 
-
-# Removing 3 variables: 
-# legume consumption during pregnancy
-# total cereal consumption postnatal
-# processed meat consumption postnatal
-dief_df <- diet_df %>% select(-c(h_legume_preg_Ter,hs_total_cereal_Ter,hs_proc_meat_Ter))
-
 
 # Centering and scaling is a good idea because the means and SDs do not seem similar
 colMeans(diet_df, na.rm=TRUE)
@@ -58,48 +45,63 @@ apply(diet_df, 2, sd, na.rm=TRUE)
 set.up.preprocess <- preProcess(diet_df, method = c("center", "scale"))
 
 # Output pre-processed values
-transformed_df <- predict(set.up.preprocess, diet_df) %>%
-  select(-c(h_legume_preg_Ter,hs_total_cereal_Ter,hs_proc_meat_Ter))
+transformed_df <- predict(set.up.preprocess, diet_df)
 
 # ----------------------------------------------------
-# Implementing a PCA for feature
+# Implementing a PCA for feature selection
 diet_pca <- prcomp( ~., data=transformed_df, center=TRUE, scale=TRUE,) 
   # only the features we are interested in reducing, not the outcome
 
-#Can compare sds used to scale with the sds above to ensure they are close.
+# Can compare sds used to scale with the sds above to ensure they are close.
 diet_pca$scale
 
-#Generates scree plot
+# Generates scree plot
 fviz_eig(diet_pca)
 
-#view results of pca. Note the first three components are needed to explain at least 75% of the variance
+# View results of pca. How many components are needed to explain at least 75% of the variance?
 summary(diet_pca)
   # we are more concerned with the cumulative proportion...
-  # or can look at standard deviation -- cut off at 1, which is at PC9
+  # or can look at standard deviation -- cut off at 1
 
-#Identify how features loaded on the different components
-diet_pca_df <- diet_pca$rotation[,1:16]
+# Identify how features loaded on the different components
+diet_pca_df <- diet_pca$rotation[,16] %>% as.data.frame() %>% filter(. >= 0.3| . <= -0.3)
 ggbiplot(diet_pca, choices=c(16,17))
+```
 
+Checking the data, there are no missing values. I also noticed that the means and standard deviations for the numeric variables are not similar, so centering and scaling were performed.
+
+Next, I ran a principal components analysis to perform feature selection to narrow down which of the 27 features to include in my hierarchical clustering algorithm. Upon inspection of the summary of the importance of components, I chose principal component 16 because it is the first to capture at least 75% of the variance in the outcome ("Cumulative Proportion") and it has a decent standard deviation close to 1.
+
+The features that the principal component are at least moderated correlated with from the original 27 and will be used for the unsupervised analysis are
+
+* `h_bfdur_Ter`: duration of breastfeeding (weeks)
+* `hs_beverages_Ter`: soda consumption; food group: beverages (hs_dietsoda + hs_soda)
+* `hs_total_lipids_Ter`: food group: added fat
+
+```{r hierarchical_clustering}
 # ----------------------------------------------------
 # Implementing the hierarchical clustering
 set.seed(100) # setting for replicability
 
+clust_df <- transformed_df %>% select(h_bfdur_Ter, hs_beverages_Ter, hs_total_lipids_Ter)
+
 # Create function to use within clusGap to identify the optimal number of clusters
 hclusCut <- 
   function(x, k) list(cluster = cutree(hclust(dist(x, method="euclidian"), method="complete"), k=k))
-gap_stat <- clusGap(transformed_df, # replace with PCA data frame here?
+gap_stat <- clusGap(clust_df, # replace with PCA data frame here?
                     FUN = hclusCut, K.max = 10, B = 50)
 
-# Identifying 5 as the optimal number of clusters
 fviz_gap_stat(gap_stat)
 
-clusters.hcut <- hcut(transformed_df, k=3, hc_func="hclust", hc_method="complete", hc_metric="euclidian")
+clusters.hcut <- hcut(clust_df, k=4, hc_func="hclust", hc_method="complete", hc_metric="euclidian")
 clusters.hcut$size
 
+# Visualizing the clusters (not using a dendogram due to the high number of observations)
 fviz_cluster(clusters.hcut)
+
 ```
 
+The hierarchical clustering algorithm identifies the optimal number of clusters to be 1. However, this is unhelpful and I chose a number of clusters 1 more than the next comparable number with a similar gap statistic, as shown in the gap statistic plot. Hence, I chose k = 4 clusters because this was the next number of clusters with a sharper increase in the gap statistic after k = 3, which was comparable to k = 1. After splitting up the observations into four clusters, the sizes of the clusters are 238, 212, 386, and 465.
 
 ### Question 3: Outputs
 
@@ -111,20 +113,33 @@ input.feature.vals <-
 
 input.feature.vals %>%
   group_by(cluster) %>%
-  summarise_all(mean)
+  summarise_all(mean) %>%
+  select(h_bfdur_Ter, hs_beverages_Ter, hs_total_lipids_Ter)
 ```
 
+The unsupervised hierarchical clustering after running a PCA to perform feature selection returns four clusters:
+
+* Cluster 1 has a mean weeks of breastfeeding of 9.20, the **highest** mean number of soda beverages of 1.28, and mean total added fats in diet of 5.81.
+* Cluster 2 has the **lowest** mean weeks of breastfeeding at 7.58, the **lowest** mean number of soda beverages at 0.445, and a relatively high mean total of added fats at 7.74.
+* Cluster 3 has the **highest** mean weeks of breastfeeding at 42.1, mean number of soda beverages of 0.767, and the **highest** mean total of added fats at 7.81.
+* Cluster 4 has a relatively high mean number of weeks of breastfeeding at 25.8, a relatively low mean number of soda beverages at 0.506, and the **lowest** mean of total added fats in diet of 2.23.
 
 # Part 2: Choose your own supervised adventure
 
-### Research Question:
+### Research Question
 What are the lifestyle and built environment features that best predict childhood obesity in children 6-11 years old?
 
 My final project rationale is hypothesis generating about how lifestyle and built environment factors contribute to childhood obesity to inform future research on how individuals' day-to-day surrounding built environments can interact with their lifestyles. I will be using a Random Forest for classification.
 
-### Data Cleaning and Processing
+### Data cleaning, processing, and PCA
 
-```{r cleaning_processing, message=FALSE, warning=FALSE}
+I will be using the results from my unsupervised analysis above to help inform the feature selection for the diet data. I will include the three identified by the PCA: `h_bfdur_Ter`, `hs_beverages_Ter`, and `hs_total_lipids_Ter` for all the diet features within the lifestyles group of features.
+
+I will also run another principle components analysis to select from the other numeric features within the larger study data combining `exposome`, `phenotype`, and `covariates` datasets. 
+
+I created a new variable `pet_allergen` to replace the binary indicator features for having a dog, cat, or other pets. All other categorical variables are kept in the data as they were originally.
+
+```{r supervised_processing, message=FALSE, warning=FALSE}
 studydata <- merge(exposome,phenotype,by="ID") %>% 
   merge(covariates, by="ID") %>% 
   mutate(hs_asthma = as.factor(hs_asthma)) %>%
@@ -136,41 +151,228 @@ builtenv_lifestyle_vars <-
 builtenv_lifestyle <- 
   studydata %>% 
   select(builtenv_lifestyle_vars) %>%
-  mutate(pet_allergen = case_when(hs_pet_cat_r2_None == "0" ~ 0,
-                                  hs_pet_cat_r2_None == "1" ~ 1,
-                                  hs_pet_dog_r2_None == "0" ~ 0,
-                                  hs_pet_dog_r2_None == "1" ~ 1,
-                                  hs_pet_None == "No" ~ 0,
-                                  hs_pet_None == "Yes" ~ 1)) %>%
-  select(-c(hs_pet_cat_r2_None, hs_pet_dog_r2_None, hs_pet_None))
+  mutate(pet_allergen = # reducing dogs/cats/other pets to only having pets or not
+           case_when(hs_pet_cat_r2_None == "0" ~ 0,
+                     hs_pet_cat_r2_None == "1" ~ 1,
+                     hs_pet_dog_r2_None == "0" ~ 0,
+                     hs_pet_dog_r2_None == "1" ~ 1,
+                     hs_pet_None == "No" ~ 0,
+                     hs_pet_None == "Yes" ~ 1)) %>%
+  select(-c(hs_pet_cat_r2_None, hs_pet_dog_r2_None, hs_pet_None)) %>%
+  mutate(pet_allergen = as.factor(pet_allergen))
 
-# Correlations
+# ----------------------------------------------------
+# Performing a PCA on the numeric variables
 dat_num <- builtenv_lifestyle %>% select(where(is.numeric))
 dat_not_num <- builtenv_lifestyle %>% select(!where(is.numeric))
-
-correlations <- cor(dat_num, use="complete.obs")
-high_correlations <- findCorrelation(correlations, cutoff=0.5) 
-
-# Removing 16 highly correlated columns based off a correlation cutoff of 0.5
-dat_num <- dat_num[-high_correlations] 
 
 # Centering and Scaling
 set.up.preprocess <- preProcess(dat_num, method = c("center", "scale"))
 
 # Output pre-processed values
-transformed_vals <- predict(set.up.preprocess, dat_num)
+transformed_nums <- predict(set.up.preprocess, dat_num)
 
-# Checking overlapping categorical variables
-summary(dat_not_num)
-transform_df <- bind_cols(transformed_vals, dat_not_num) # 45 variables
+# PCA
+obesity_pca <- prcomp( ~., data=transformed_nums, center=TRUE, scale=TRUE,) 
+
+# Can compare sds used to scale with the sds above to ensure they are close.
+obesity_pca$scale # checks out!
+
+# Generates scree plot
+fviz_eig(obesity_pca)
+
+# View results of pca. How many components are needed to explain at least 75% of the variance?
+summary(obesity_pca)
+
+obesity_pca_df <- obesity_pca$rotation[,10] %>% as.data.frame() %>% filter(. >= 0.3| . <= -0.3)
+ggbiplot(obesity_pca, choices=c(10,11))
+
+pca_vars <- dat_num %>% select(hs_KIDMED_None, hs_sd_wk_None, hs_dif_hours_total_None)
+cat_vars <- dat_not_num %>% select(h_bfdur_Ter, hs_beverages_Ter, hs_total_lipids_Ter,
+                                   pet_allergen, e3_alcpreg_yn_None, h_folic_t1_None,
+                                   h_pavig_t3_None, h_pamod_t3_None, hs_caff_drink_Ter)
+
+# Creating final set of data to work with
+obesity_df <- bind_cols(pca_vars, cat_vars) # from 241 to 12 variables!
+colnames(obesity_df)
 
 ```
+
+The features that the principal component are at least moderated correlated with from the original 29 numeric variables in the study data and will be used for the Random Forest supervised analysis are
+
+* `hs_KIDMED_None`: sum of KIDMED indices, without index 9 postnatal
+* `hs_sd_wk_None`: sedentary behaviour (min/day) postnatal
+* `hs_dif_hours_total_None`: total hours of sleep (mean weekdays and night) postnatal
+
+Furthermore, of the 33 categorical lifestyle and built environment features in the study data, I am including the following diet variables from the previous unsupervised PCA
+
+* `h_bfdur_Ter`: duration of breastfeeding (weeks)
+* `hs_beverages_Ter`: soda consumption; food group: beverages (hs_dietsoda + hs_soda)
+* `hs_total_lipids_Ter`: food group: added fat,
+
+on top of the other categorical variables in the dataset:
+
+* `pet_allergen`: a variable I created to indicate whether or not there are pets in the household
+* `e3_alcpreg_yn_None`: alcohol during pregnancy (binarized: 0 = none or <1/m for KANC)
+* `h_folic_t1_None`: folic acid supplementation during pregnancy
+* `h_pavig_t3_None`: exercise or sport activity during pregnancy (frequency)
+* `h_pamod_t3_None`: walking and/or cycling acitivity during pregnancy (frequency)
+* `hs_caff_drink_Ter`: drinks a caffeinated or energy drink (e.g., Coca-cola, Diet-Coke, RedBull)
+
+**Data Preparation**
+```{r rf_data_preparation}
+set.seed(100)
+hs_bmi_c_cat <- studydata$hs_bmi_c_cat %>% as.data.frame()
+rf_df <- 
+  bind_cols(obesity_df, hs_bmi_c_cat) %>%
+  mutate(obesity = as.factor(ifelse(. == 4, 1,0))) %>% # binarizing BMI to obese or not
+  select(-.)
+
+# Checking the frequency for any imbalance reveals there is an imbalance in our outcome
+summary(rf_df$obesity)
+```
+
+BMI categories are binarized using obese or not obese levels. After checking for imbalances in the outcome, we can see that 1) there are no missing data and 2) `r round(summary(rf_df$obesity)[1]/nrow(rf_df)*100, 2)`% of the observations are classified as not obese and `r round(summary(rf_df$obesity)[2]/nrow(rf_df)*100, 2)`% of the observations are indeed obese.
+
+**Splitting the testing and training data**
+```{r testing_training_split}
+set.seed(100)
+train_indices <- createDataPartition(y=rf_df$obesity, p=0.7, list=FALSE)
+training <- rf_df[train_indices, ] %>% tibble()
+testing <- rf_df[-train_indices, ] %>% tibble()
+
+# Checking distribution of the outcome -- we are good!
+summary(training$obesity)
+summary(testing$obesity)
+```
+
+### Implementing Logistic Regression with Elastic-Net Regularization
+
+```{r elastic_net_tuning}
+# ----------------------------------------------------
+# Running an elastic net (regularized) logistic regression to predict childhood obesity status
+train_control <- trainControl(method="cv", number = 10, sampling = "down")
+logistic_reg <- train(obesity ~., data = training, 
+                      method = "glmnet", family = "binomial",
+                      trControl = train_control, tuneLength=10)
+logistic_reg$bestTune
+
+```
+
+Down-sampling was used in order to account for the imbalance in our outcome of obesity in the data. After performing a logistic regression with elastic net regularization, it turns out that the best tuning parameters for alpha and lambda are `r logistic_reg$bestTune[1]` and `r logistic_reg$bestTune[2]`, respectively.
+
+**Elastic-Net Results and Predictions**
+
+```{r elastic_net_results}
+# Coefficients for the regularized logistic regression
+coef(logistic_reg$finalModel, logistic_reg$bestTune$lambda)
+
+# Making predictions
+logistic_pred <- logistic_reg %>% predict(training)
+
+# Confusion Matrix
+confusion_logistic <- 
+  confusionMatrix(logistic_pred, training$obesity,
+                  positive = "1")
+confusion_logistic$table
+```
+
+After applying this logistic regression model using regularization to the training dataset, we find that it is `r round(confusion_logistic$overall[1]*100,2)`% accurate in predicting childhood obesity status, with a sensitivity and specificity of `r round(confusion_logistic$byClass[1]*100,2)`% and `r round(confusion_logistic$byClass[2]*100,2)`%, respectively.
 
 ### Implementing a Random Forest
-```{r random_forest}
 
+```{r random_forest, warning=FALSE, message=FALSE}
+# ----------------------------------------------------
+# Running the random forest to predict childhood obesity status
+library(randomForest)
+set.seed(100)
+
+# Using the caret package to vary mtry to tune the Random Forest
+mtry.vals <- c(ncol(training)-1, sqrt(ncol(training)-1), 0.5*ncol(training)-1)
+mtry.grid <- expand.grid(.mtry=mtry.vals)
+
+nmin <- sum(training$obesity == "1")
+rf_obesity <- train(obesity~., data=training, method="rf", 
+                    metric="Accuracy", tuneGrid=mtry.grid, ntree=100,
+                    strata = training$obesity,
+                    sampsize = rep(nmin, 2))
+
+rf_obesity$results
+rf_obesity$bestTune
+
+# We identify the optimal tuning mtry to be 3.464102, so now let's make sure we hit the right ntree
+mtry.opt <- as.numeric(rf_obesity$bestTune)
+rf.mtry.ntrees <- 
+  randomForest(obesity ~., data = training, mtry = mtry.opt, 
+               importance=TRUE, ntree = 500,
+               strata = training$obesity, sampsize = rep(nmin, 2))
+
+# 300 trees are enough to hit the optimal number of accuracy because the plot DECREASES then levels off
+plot(1-rf.mtry.ntrees$err.rate[,1], pch=16)
+
+rf.mtry.optimal <- 
+  randomForest(obesity ~., data = training, mtry = mtry.opt, 
+               importance=TRUE, ntree=300,
+               strata = training$obesity, sampsize = rep(nmin, 2))
+```
+
+In order to account for the imbalance in the outcome of obesity, the `strata` and `sampsize` arguments were used in the training syntax for creating the random forest.
+
+**Random Forest Results and Predictions**
+
+```{r random_forest_results}
+# Variable importance
+varImpPlot(rf.mtry.optimal)
+
+# Final Random Forest model results
+rf.mtry.optimal
+```
+
+The features that are most important in the random forest for accuracy are 
+
+* `h_bfdur_Ter`: duration of breastfeeding (weeks)
+* `h_pavig_t3_None`: exercise or sport activity during pregnancy (frequency)
+* `h_folic_t1_None`: folic acid supplementation during pregnancy.
+
+The features that are most important in the random forest for Gini impurity, which measure the probability of a particular variable being wrongly classified when it is randomly chosen, are our three continuous variables
+
+* `hs_dif_hours_total_None`: total hours of sleep (mean weekdays and night) postnatal
+* `hs_sd_wk_None`: sedentary behaviour (min/day) postnatal
+* `hs_KIDMED_None`: sum of KIDMED indices, without index 9 postnatal
+
+After applying this random forest model to the training dataset, we find that it is `r round(100-tail(rf.mtry.optimal$err.rate[,"OOB"],1)*100,2)`% accurate in predicting childhood obesity status, with a sensitivity and specificity of 41.30% and 74.73%, respectively.
+
+### Final Model
+
+Comparing the elastic-net regularized logistic regression and the random forest results on the training data:
+
+Elastic-Net Logistic Regression
+
+* `r round(confusion_logistic$overall[1]*100,2)`% accuracy
+* `r round(confusion_logistic$byClass[1]*100,2)`% sensitivity
+* `r round(confusion_logistic$byClass[2]*100,2)`% specificity
+
+Random Forest
+
+* `r round(100-tail(rf.mtry.optimal$err.rate[,"OOB"],1)*100,2)`% accuracy
+* 41.30% sensitivity
+* 74.73% specificity
+
+Although the random forest model does better in terms of prediction accuracy, it has a very low sensitivity when compared to the elastic-net logistic regression. In this case, it may be more clinically meaningful to choose a model with higher sensitivity, since we are identifying children who are obese. If we fail to identify the obese children, we may not be able to intervene early enough in their lifecourse to be able to mitigate any future accumulating health risks.
+
+```{r final_model_testing}
+pred_obese <- predict(logistic_reg, testing)
+pred_obese_prob <- predict(logistic_reg, testing, type="prob")
+
+# Printing the confusion matrix and results
+results_test <- confusionMatrix(pred_obese, testing$obesity, positive = "1")
+print(results_test)
 ```
 
 
+### Limitation
 
+Although the elastic-net has high interpretability, **one limitation** of using this algorithm to classify childhood obesity in 6-11 year olds is that it is not very accurate. 
+
+Again, looking at both the training and testing results, we obtain accuracies of `r round(confusion_logistic$overall[1]*100,2)`% and `r round(results_test$overall[1]*100,2)`%, respectively. Furthermore, when comparing the sensitivities, for training and testing, we have `r round(confusion_logistic$byClass[1]*100,2)`% and `r round(results_test$byClass[1]*100,2)`%, respectively and when comparing specificities, we have `r round(confusion_logistic$byClass[2]*100,2)`% and `r round(results_test$byClass[2]*100,2)`%, respectively. These are not very fantastic predictive measures, however, some other algorithms/methods to consider could be using a stacking method or incorporating more variables to hopefully capture more of the variation in the data.
 
